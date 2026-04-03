@@ -1,0 +1,19 @@
+# Valid pod - should be accepted and mutated (labels/resources added)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: valid-test-pod
+spec:
+  containers:
+  - name: app
+    image: alpine:3.18
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    command:
+    - sleep
+    - "3600"

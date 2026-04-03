@@ -1,0 +1,88 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: {{ include "governance-hub.namespace" . }}
+  labels:
+    {{- include "governance-hub.labels" . | nindent 4 }}
+    component: nginx
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /var/run/nginx.pid;
+
+    events {
+        worker_connections {{ .Values.nginx.config.workerConnections }};
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log /var/log/nginx/access.log main;
+
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        keepalive_timeout 65;
+        types_hash_max_size 2048;
+        client_max_body_size {{ .Values.nginx.config.clientMaxBodySize }};
+
+        # Upstream to the Flask application
+        upstream governance-hub_app {
+            server {{ include "governance-hub.appName" . }}:{{ .Values.app.port }};
+        }
+
+        # HTTP server - redirect to HTTPS
+        server {
+            listen {{ .Values.nginx.ports.http }};
+            listen [::]:{{ .Values.nginx.ports.http }};
+            server_name _;
+
+            location / {
+                # Simple health check for HTTP
+                return 200 "OK";
+            }
+
+            # Proxy to app for non-health endpoints
+            location ~ ^/(api|policies|health) {
+                proxy_pass http://governance-hub_app;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_read_timeout {{ .Values.nginx.config.proxyReadTimeout }};
+            }
+        }
+
+        # HTTPS server for admission webhooks
+        server {
+            listen {{ .Values.nginx.ports.https }} ssl;
+            listen [::]:{{ .Values.nginx.ports.https }} ssl;
+            server_name _;
+
+            # SSL certificates mounted from Kubernetes secret
+            ssl_certificate /etc/nginx/tls/server.crt;
+            ssl_certificate_key /etc/nginx/tls/server.key;
+
+            # Basic SSL configuration
+            ssl_protocols {{ .Values.nginx.config.tlsProtocols }};
+            ssl_ciphers {{ .Values.nginx.config.tlsCiphers }};
+            ssl_prefer_server_ciphers on;
+
+            location / {
+                proxy_pass http://governance-hub_app;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto https;
+                proxy_read_timeout {{ .Values.nginx.config.proxyReadTimeout }};
+            }
+        }
+    }

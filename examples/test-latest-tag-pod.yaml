@@ -1,0 +1,20 @@
+# INVALID - Using :latest tag
+# This should be rejected by ForbidLatestTag validator
+apiVersion: v1
+kind: Pod
+metadata:
+  name: latest-tag-test-pod
+spec:
+  containers:
+  - name: app
+    image: alpine:latest
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    command:
+    - sleep
+    - "3600"

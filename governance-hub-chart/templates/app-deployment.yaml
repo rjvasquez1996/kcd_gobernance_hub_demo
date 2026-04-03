@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "governance-hub.appName" . }}
+  namespace: {{ include "governance-hub.namespace" . }}
+  labels:
+    {{- include "governance-hub.labels" . | nindent 4 }}
+    component: app
+spec:
+  replicas: {{ .Values.app.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "governance-hub.selectorLabels" . | nindent 6 }}
+      component: app
+  template:
+    metadata:
+      labels:
+        {{- include "governance-hub.selectorLabels" . | nindent 8 }}
+        component: app
+    spec:
+      {{- if .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: app
+        {{- if .Values.securityContext }}
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 12 }}
+        {{- end }}
+        image: "{{ .Values.app.image.repository }}:{{ .Values.app.image.tag }}"
+        imagePullPolicy: {{ .Values.app.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.app.port }}
+          name: http
+        env:
+        {{- range $key, $value := .Values.app.env }}
+        - name: {{ $key }}
+          value: {{ $value | quote }}
+        {{- end }}
+        {{- if .Values.app.livenessProbe.enabled }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.app.port }}
+          initialDelaySeconds: {{ .Values.app.livenessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.app.livenessProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.app.livenessProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.app.livenessProbe.failureThreshold }}
+        {{- end }}
+        {{- if .Values.app.readinessProbe.enabled }}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.app.port }}
+          initialDelaySeconds: {{ .Values.app.readinessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.app.readinessProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.app.readinessProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.app.readinessProbe.failureThreshold }}
+        {{- end }}
+        resources:
+          {{- toYaml .Values.app.resources | nindent 12 }}

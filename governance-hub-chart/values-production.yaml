@@ -1,0 +1,94 @@
+# Production-ready values for Governance Hub
+# Override default values.yaml for production deployments
+
+global:
+  namespace: governance-hub-prod
+  app: governance-hub
+
+app:
+  name: governance-hub-app
+  image:
+    repository: registry.example.com/governance-hub-app
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent  # Use registry instead of local
+
+  replicaCount: 3  # High availability
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
+  livenessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 2
+
+nginx:
+  name: governance-hub-nginx
+  image:
+    repository: registry.example.com/governance-hub-nginx
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent  # Use registry instead of local
+
+  replicaCount: 3  # High availability
+
+  config:
+    workerConnections: 2048
+    clientMaxBodySize: 50M
+    proxyReadTimeout: 60s
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  livenessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 2
+
+service:
+  app:
+    type: ClusterIP
+    port: 5000
+
+  nginx:
+    type: ClusterIP
+    ports:
+      http: 80
+      https: 443
+
+webhooks:
+  validating:
+    enabled: true
+    failurePolicy: Fail  # Strict: deny invalid requests
+    timeoutSeconds: 15
+
+  mutating:
+    enabled: true
+    failurePolicy: Fail  # Strict: fail if mutation fails
+    timeoutSeconds: 15
+
+# For production, set the CA bundle via:
+# helm install ... --set tls.caBundle="<base64-encoded-ca-cert>"

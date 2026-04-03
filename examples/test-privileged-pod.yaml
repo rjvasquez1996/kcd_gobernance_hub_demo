@@ -1,0 +1,22 @@
+# INVALID - Privileged pod
+# This should be rejected by ForbidPrivilegedMode validator
+apiVersion: v1
+kind: Pod
+metadata:
+  name: privileged-test-pod
+spec:
+  containers:
+  - name: app
+    image: alpine:3.18
+    securityContext:
+      privileged: true
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    command:
+    - sleep
+    - "3600"

@@ -1,0 +1,31 @@
+{{- if .Values.webhooks.mutating.enabled }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "governance-hub.fullname" . }}-mutator
+  labels:
+    {{- include "governance-hub.labels" . | nindent 4 }}
+webhooks:
+- name: mutate.{{ include "governance-hub.namespace" . }}.svc
+  admissionReviewVersions: ["v1"]
+  clientConfig:
+    service:
+      name: {{ include "governance-hub.nginxName" . }}
+      namespace: {{ include "governance-hub.namespace" . }}
+      path: "/api/v1/mutate"
+      port: {{ .Values.service.nginx.ports.https }}
+    {{- if .Values.tls.caBundle }}
+    caBundle: {{ .Values.tls.caBundle | quote }}
+    {{- end }}
+  rules:
+  - operations: {{ .Values.webhookRules.operations | toJson }}
+    apiGroups: {{ .Values.webhookRules.apiGroups | toJson }}
+    apiVersions: {{ .Values.webhookRules.apiVersions | toJson }}
+    resources: {{ .Values.webhookRules.resources | toJson }}
+    scope: {{ .Values.webhookRules.scope | quote }}
+  failurePolicy: {{ .Values.webhooks.mutating.failurePolicy }}
+  sideEffects: {{ .Values.webhooks.mutating.sideEffects }}
+  timeoutSeconds: {{ .Values.webhooks.mutating.timeoutSeconds }}
+  admissionReviewVersions: ["v1"]
+  reinvocationPolicy: {{ .Values.webhooks.mutating.reinvocationPolicy }}
+{{- end }}

@@ -1,0 +1,30 @@
+{{- if .Values.webhooks.validating.enabled }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "governance-hub.fullname" . }}-validator
+  labels:
+    {{- include "governance-hub.labels" . | nindent 4 }}
+webhooks:
+- name: validate.{{ include "governance-hub.namespace" . }}.svc
+  admissionReviewVersions: ["v1"]
+  clientConfig:
+    service:
+      name: {{ include "governance-hub.nginxName" . }}
+      namespace: {{ include "governance-hub.namespace" . }}
+      path: "/api/v1/validate"
+      port: {{ .Values.service.nginx.ports.https }}
+    {{- if .Values.tls.caBundle }}
+    caBundle: {{ .Values.tls.caBundle | quote }}
+    {{- end }}
+  rules:
+  - operations: {{ .Values.webhookRules.operations | toJson }}
+    apiGroups: {{ .Values.webhookRules.apiGroups | toJson }}
+    apiVersions: {{ .Values.webhookRules.apiVersions | toJson }}
+    resources: {{ .Values.webhookRules.resources | toJson }}
+    scope: {{ .Values.webhookRules.scope | quote }}
+  failurePolicy: {{ .Values.webhooks.validating.failurePolicy }}
+  sideEffects: {{ .Values.webhooks.validating.sideEffects }}
+  timeoutSeconds: {{ .Values.webhooks.validating.timeoutSeconds }}
+  admissionReviewVersions: ["v1"]
+{{- end }}

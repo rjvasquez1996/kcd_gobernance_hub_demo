@@ -1,0 +1,18 @@
+apiVersion: v2
+name: governance-hub
+description: Kubernetes admission webhook service for policy validation and resource mutation
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - kubernetes
+  - admission-webhook
+  - validation
+  - mutation
+  - policy
+home: https://github.com/anthropics/test-kcd
+sources:
+  - https://github.com/anthropics/test-kcd
+maintainers:
+  - name: Platform Team
+    email: platform@example.com

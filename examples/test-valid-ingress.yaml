@@ -1,0 +1,23 @@
+# Valid Ingress - should be accepted and mutated
+# The mutators will:
+# - Set ingressClassName to 'nginx' if not specified
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: valid-ingress
+spec:
+  tls:
+  - hosts:
+    - example.com
+    secretName: example-tls
+  rules:
+  - host: example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: my-service
+            port:
+              number: 80

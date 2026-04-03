@@ -1,0 +1,153 @@
+# Default values for governance-hub
+# This is a YAML-formatted file.
+
+# Global settings
+global:
+  namespace: governance-hub-demo
+  app: governance-hub-demo
+
+# Flask App Configuration
+app:
+  name: governance-hub-app
+  image:
+    repository: governance-hub-app
+    tag: "v1"
+    pullPolicy: Never  # Use Never for Minikube (local images), IfNotPresent for production
+
+  replicaCount: 1
+
+  port: 5000
+
+  env:
+    FLASK_ENV: "production"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 1
+    failureThreshold: 3
+
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 1
+    failureThreshold: 3
+
+# Nginx Proxy Configuration
+nginx:
+  name: governance-hub-nginx
+  image:
+    repository: governance-hub-nginx
+    tag: "v1"
+    pullPolicy: Never  # Use Never for Minikube (local images), IfNotPresent for production
+
+  replicaCount: 1
+
+  ports:
+    http: 80
+    https: 443
+
+  config:
+    workerConnections: 1024
+    clientMaxBodySize: 20M
+    proxyReadTimeout: 30s
+    tlsProtocols: "TLSv1.2 TLSv1.3"
+    tlsCiphers: "HIGH:!aNULL:!MD5"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 1
+    failureThreshold: 3
+
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 1
+    failureThreshold: 3
+
+# TLS/Certificate Configuration
+tls:
+  secretName: governance-hub-tls
+  # caBundle will be populated during certificate generation
+
+# Service Configuration
+service:
+  app:
+    type: ClusterIP
+    port: 5000
+
+  nginx:
+    type: ClusterIP
+    ports:
+      http: 80
+      https: 443
+
+# Webhook Configuration
+webhooks:
+  validating:
+    enabled: true
+    failurePolicy: Fail
+    timeoutSeconds: 10
+    sideEffects: None
+
+  mutating:
+    enabled: true
+    failurePolicy: Ignore
+    timeoutSeconds: 10
+    sideEffects: None
+    reinvocationPolicy: IfNeeded
+
+# Webhook Rules
+webhookRules:
+  operations:
+    - CREATE
+    - UPDATE
+  apiGroups:
+    - ""
+    - apps
+    - batch
+    - networking.k8s.io
+  apiVersions:
+    - v1
+    - v1beta1
+  resources:
+    - pods
+    - deployments
+    - statefulsets
+    - daemonsets
+    - jobs
+    - cronjobs
+    - replicasets
+    - namespaces
+    - ingresses
+  scope: "*"
+
+# Pod Security and Labels
+podSecurityContext: {}
+
+securityContext: {}
+
+labels: {}
+
+annotations: {}

@@ -1,0 +1,15 @@
+# Pod without resources - should be mutated to add default resources
+# The mutators will inject:
+# - Default CPU and memory limits (100m, 128Mi)
+# - Governance labels
+apiVersion: v1
+kind: Pod
+metadata:
+  name: no-resources-test-pod
+spec:
+  containers:
+  - name: app
+    image: alpine:3.18
+    command:
+    - sleep
+    - "3600"
