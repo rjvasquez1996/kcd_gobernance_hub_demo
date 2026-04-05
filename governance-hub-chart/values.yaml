@@ -164,7 +164,7 @@ policies:
     ForbidPrivilegedMode: true
     RequireResourceLimits: true
     ForbidLatestTag: true
-    NoDirectNamespaceCreation: true
+    NoDirectNamespaceCreation: false  # Allow namespace creation for demo purposes
     RequiredLabelsCheck: true
     IngressTLSRequired: true
     IngressRuleLimit: true

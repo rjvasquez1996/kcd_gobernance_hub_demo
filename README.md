@@ -67,49 +67,53 @@ Governance Hub implements two types of Kubernetes admission webhooks:
 ## Prerequisites
 
 - **Minikube** 1.20+
-- **Docker** (for building images)
+- **Colima** (macOS) — used as the Docker runtime; `make setup` starts it automatically
 - **kubectl** 1.20+
+- **Helm** 3.0+
 - **openssl** (for generating TLS certificates)
-- **bash** shell
+
+Install on macOS:
+
+```bash
+brew install minikube colima kubectl helm openssl
+```
+
+## Namespaces
+
+| Namespace | Purpose |
+|-----------|---------|
+| `governance-hub-demo` | Base application (webhook service) — excluded from webhook interception |
+| `governance-hub-test` | Mutator integration tests |
+| `governance-hub-validator-test` | Validator integration tests |
+
+> **Important**: test namespaces must be created **before** the webhook is deployed because `NoDirectNamespaceCreation` blocks namespace creation once the webhook is active. `make setup` handles this automatically.
 
 ## Quick Start
 
-The fastest path is using `make deploy`, which handles everything automatically.
-
-### 1. Navigate to Demo Directory
-
 ```bash
 cd demo/
+make setup
 ```
 
-### 2. Full Deployment (one command)
+`make setup` runs the full fresh setup in the correct order:
 
-```bash
-make deploy
-```
+1. Start Colima with 4 CPU / 4GB memory (restarts if under-resourced)
+2. Start Minikube using Colima's Docker daemon
+3. Build Docker images (`v1`) and load them into Minikube via `docker save | docker exec`
+4. Create `governance-hub-demo` namespace
+5. Create `governance-hub-test` and `governance-hub-validator-test` namespaces (before webhook is active)
+6. Generate TLS certificates and sync the secret
+7. Deploy via Helm (activates the admission webhooks)
+8. Wait for deployments to be ready
+9. Print a verification summary
 
-This single command will:
-- Start Minikube (if not already running)
-- Build Docker images (`--no-cache`)
-- Create namespaces (`governance-hub-demo` and `governance-hub-test`)
-- Generate TLS certificates (if missing)
-- Deploy everything via Helm
-- Wait for deployments to be ready
-- Print a verification summary
-
-### 3. Verify
-
-```bash
-make verify
-```
-
-### 4. Run Integration Tests
+### Run Integration Tests
 
 ```bash
 make test
 ```
 
-### 5. Run Unit Tests (no cluster required)
+### Run Unit Tests (no cluster required)
 
 ```bash
 make unit-test
@@ -117,28 +121,31 @@ make unit-test
 
 ---
 
-### Manual Deployment (step by step)
-
-If you prefer manual control:
+### Manual Setup (step by step)
 
 ```bash
-# 1. Start Minikube
-minikube start --driver=docker --memory 4096 --cpus 2
-eval $(minikube docker-env)
+# 1. Start Colima (Docker runtime)
+make colima-start
 
-# 2. Build images
+# 2. Start Minikube
+make minikube-start
+
+# 3. Build images (tagged v1) and load into Minikube
 make build
 
-# 3. Create namespaces (must happen before webhooks are active)
+# 4. Create base namespace
 make create-namespace
 
-# 4. Generate TLS certificates
+# 5. Create test namespaces (must happen before webhook is active)
+make create-test-namespaces
+
+# 6. Generate TLS certificates
 make generate-certs-if-missing
 
-# 5. Deploy via Helm
+# 7. Deploy via Helm (activates the webhook)
 make deploy-helm
 
-# 6. Wait for pods
+# 8. Wait for pods
 make wait-deployments
 ```
 
@@ -147,39 +154,41 @@ make wait-deployments
 ### Test 1: Query Available Policies
 
 ```bash
-# Get a shell in the nginx pod
-kubectl exec -it -n governance-hub-demo \
-  $(kubectl get pod -n governance-hub-demo -l component=nginx -o jsonpath='{.items[0].metadata.name}') \
-  -- sh
-
-# Inside the pod, test the policies endpoint
-wget -O - http://governance-hub-app:5000/api/v1/policies
-
-# Expected output: JSON list of validators and mutators
+make test-policies
 ```
 
-### Test 2: Test Validator - Reject Privileged Pod
+Or manually:
 
-> **Note**: Run these tests in `governance-hub-test` namespace — `governance-hub-demo` is excluded from webhook interception.
+```bash
+kubectl exec -it -n governance-hub-demo \
+  $(kubectl get pod -n governance-hub-demo -l component=nginx -o jsonpath='{.items[0].metadata.name}') \
+  -- wget -q -O - http://governance-hub-app:5000/api/v1/policies
+```
+
+### Test 2: Validator - Reject Privileged Pod
+
+> Validator tests run in `governance-hub-validator-test`.
 
 ```bash
 kubectl run privileged-test \
   --image=alpine:3.18 \
   --overrides='{"spec":{"containers":[{"name":"test","image":"alpine:3.18","resources":{"limits":{"cpu":"100m","memory":"64Mi"}},"securityContext":{"privileged":true}}]}}' \
-  -n governance-hub-test
+  -n governance-hub-validator-test
 ```
 
-Expected: Pod creation is denied with message about privileged mode not allowed.
+Expected: Pod creation is denied with a message about privileged mode not being allowed.
 
-### Test 3: Test Validator - Reject Latest Tag
+### Test 3: Validator - Reject Latest Tag
 
 ```bash
-kubectl run test-latest --image=alpine:latest -n governance-hub-test
+kubectl run test-latest --image=alpine:latest -n governance-hub-validator-test
 ```
 
 Expected: Pod creation is denied because `:latest` tag is not allowed.
 
-### Test 4: Test Mutator - Resource Limits Injection
+### Test 4: Mutator - Resource Limits Injection
+
+> Mutator tests run in `governance-hub-test`.
 
 ```bash
 kubectl apply -f examples/test-mutation-pod.yaml -n governance-hub-test
@@ -189,7 +198,7 @@ kubectl get pod test-mutation-pod -n governance-hub-test \
 
 Expected: Resource requests and limits have been automatically injected (100m CPU, 128Mi memory).
 
-### Test 5: Test Mutator - Label Injection
+### Test 5: Mutator - Label Injection
 
 ```bash
 kubectl get pod test-mutation-pod -n governance-hub-test \
@@ -198,13 +207,13 @@ kubectl get pod test-mutation-pod -n governance-hub-test \
 
 Expected: Labels `app.kubernetes.io/managed-by: governance-hub-demo` and `governance/policy-version: v1` are present.
 
-### Test 6: Test Namespace Validation
+### Test 6: Namespace Validation
 
 ```bash
 kubectl create namespace test-namespace
 ```
 
-Expected: Creation is denied with message about direct namespace creation not allowed.
+Expected: Creation is denied with a message about direct namespace creation not being allowed.
 
 ### Run All Integration Tests
 
@@ -213,8 +222,6 @@ make test
 ```
 
 ### Test 7: Direct API Testing (Advanced)
-
-If you want to test the webhook endpoints directly:
 
 ```bash
 # Port-forward to the nginx service
@@ -227,26 +234,15 @@ cat > /tmp/admission-review.json <<EOF
   "kind": "AdmissionReview",
   "request": {
     "uid": "12345",
-    "kind": {
-      "group": "",
-      "kind": "Pod"
-    },
+    "kind": { "group": "", "kind": "Pod" },
     "operation": "CREATE",
     "namespace": "default",
     "object": {
       "apiVersion": "v1",
       "kind": "Pod",
-      "metadata": {
-        "name": "test-pod"
-      },
+      "metadata": { "name": "test-pod" },
       "spec": {
-        "containers": [
-          {
-            "name": "app",
-            "image": "alpine:3.18",
-            "resources": {}
-          }
-        ]
+        "containers": [{ "name": "app", "image": "alpine:3.18", "resources": {} }]
       }
     }
   }
@@ -270,7 +266,7 @@ curl -k -X POST https://localhost:8443/api/v1/mutate \
 demo/
 ├── app/                          # Flask application
 │   ├── app.py                    # Flask entry point
-│   ├── requirements.txt           # Python dependencies
+│   ├── requirements.txt          # Python dependencies
 │   ├── validators/
 │   │   ├── __init__.py           # Registration & discovery
 │   │   ├── base.py               # Validator base class
@@ -289,33 +285,32 @@ demo/
 │       ├── mutate.py             # POST /mutate endpoint
 │       ├── policies.py           # GET /policies endpoint
 │       └── health.py             # GET /health endpoint
-├── nginx/
-│   └── nginx.conf                # Nginx configuration
-├── k8s/                          # Kubernetes manifests
-│   ├── namespace.yaml
-│   ├── app-deployment.yaml
-│   ├── app-service.yaml
-│   ├── nginx-deployment.yaml
-│   ├── nginx-service.yaml
-│   ├── nginx-configmap.yaml
-│   ├── validating-webhook.yaml
-│   ├── mutating-webhook.yaml
-│   └── tls/
-│       └── generate-certs.sh     # TLS certificate generation
+├── governance-hub-chart/         # Helm chart
+│   ├── Chart.yaml
+│   ├── values.yaml
+│   └── templates/
+│       ├── app-deployment.yaml
+│       ├── app-service.yaml
+│       ├── nginx-deployment.yaml
+│       ├── nginx-service.yaml
+│       ├── nginx-configmap.yaml
+│       ├── validating-webhook.yaml
+│       └── mutating-webhook.yaml
+├── k8s/tls/
+│   └── generate-certs.sh         # TLS certificate generation
+├── examples/
+│   └── test-mutation-pod.yaml
+├── tests/                        # Unit tests (pytest)
 ├── Dockerfile                    # Python 3.11-slim + Flask
 ├── Dockerfile.nginx              # nginx:alpine
-└── README.md                     # This file
+└── Makefile
 ```
 
 ## Adding New Validators
 
-To add a new validator:
-
 1. Create a new class in `app/validators/<resource>.py` extending `Validator`
 2. Implement `is_applicable()` and `validate()` methods
 3. Decorate with `@registered_as_validator`
-
-Example:
 
 ```python
 from validators.base import Validator, registered_as_validator
@@ -330,16 +325,20 @@ class MyValidator(Validator):
         return True, None
 ```
 
-## Adding New Mutators
+Enable it in `governance-hub-chart/values.yaml`:
 
-To add a new mutator:
+```yaml
+policies:
+  validators:
+    MyValidator: true
+```
+
+## Adding New Mutators
 
 1. Create a new class in `app/mutators/<resource>.py` extending `Mutator`
 2. Implement `is_applicable()` and `generate_patch()` methods
 3. Decorate with `@registered_as_mutator`
 4. Return a list of RFC 6902 JSON Patch operations
-
-Example:
 
 ```python
 from mutators.base import Mutator, registered_as_mutator
@@ -350,85 +349,64 @@ class MyMutator(Mutator):
         return review_request.get('object', {}).get('kind') == 'Pod'
 
     def generate_patch(self, review_request):
-        return [
-            {
-                'op': 'add',
-                'path': '/metadata/labels/my-label',
-                'value': 'my-value'
-            }
-        ]
+        return [{'op': 'add', 'path': '/metadata/labels/my-label', 'value': 'my-value'}]
+```
+
+Enable it in `governance-hub-chart/values.yaml`:
+
+```yaml
+policies:
+  mutators:
+    MyMutator: true
 ```
 
 ## Troubleshooting
 
 ### Webhooks Not Triggering
-- Verify webhook configurations are applied: `kubectl get validatingwebhookconfigurations`
-- Check certificate: `kubectl describe validatingwebhookconfigurations governance-hub-validator`
-- Ensure CA bundle is set correctly in webhook config
+- Verify webhook configurations: `kubectl get validatingwebhookconfigurations`
+- Check CA bundle: `kubectl describe validatingwebhookconfigurations governance-hub-validator`
+- Ensure test pods are created in `governance-hub-validator-test` or `governance-hub-test`, not `governance-hub-demo`
 
 ### TLS Certificate Errors
-- Regenerate certificates: `cd k8s/tls && rm -f *.key *.crt *.csr && ./generate-certs.sh`
-- Update webhook configurations with new CA bundle
-- Restart nginx pod: `kubectl rollout restart deployment/governance-hub-nginx -n governance-hub-demo`
+- Regenerate certificates: `make generate-certs-fresh`
+- Restart nginx: `kubectl rollout restart deployment/governance-hub-nginx -n governance-hub-demo`
 
 ### Pods Not Getting Mutated
-- Check mutator logs: `kubectl logs -n governance-hub-demo <nginx-pod> | grep mutate`
-- Verify mutating webhook is enabled: `kubectl get mutatingwebhookconfigurations`
-- Test mutation endpoint directly with curl (see Testing section)
+- Check logs: `make logs-app`
+- Verify mutating webhook: `kubectl get mutatingwebhookconfigurations`
+- Test mutation endpoint directly (see Test 7 above)
 
-### High Latency on Pod Creation
-- Webhook timeouts default to 10s (configured in webhook YAML)
-- Ensure Minikube has sufficient resources: at least 4GB memory, 2 CPUs
-- Check app/nginx logs for performance issues
+### Build Errors on macOS with Colima
+- Images are built using Colima's Docker daemon (tagged `v1`) and loaded into Minikube via `docker save | docker exec -i minikube docker load`
+- Colima must have at least 4GB memory allocated — `make colima-start` handles this automatically, restarting Colima if it was started with less
+- If you see `ErrImageNeverPull`, the image tag in Minikube doesn't match `values.yaml` (`v1`) — re-run `make build`
+- If you see TLS cert errors (`no such file or directory` for `.minikube/certs`), stale `DOCKER_HOST`/`DOCKER_TLS_VERIFY` env vars are set in your shell — open a fresh terminal and retry
+- If the cluster is in an inconsistent state: `make cleanup && make setup`
+
+### Test Namespace Does Not Exist
+- Test namespaces must be created before the webhook is deployed
+- If the webhook is already active, run `make cleanup && make setup` to recreate everything in the correct order
 
 ## Cleanup
 
 ```bash
-# Full cleanup (Helm uninstall + both namespaces + Docker images)
+# Full cleanup: Helm release, namespaces, Docker images, TLS certs, and Minikube
 make cleanup
-
-# Also remove TLS certificates
-make cleanup-certs
-
-# Nuclear option: delete everything including Minikube
-make full-clean
 ```
 
-Or manually:
+Or to clean individual components:
 
 ```bash
-helm uninstall governance-hub --namespace governance-hub-demo
-kubectl delete namespace governance-hub-demo governance-hub-test --ignore-not-found
-minikube stop
+make cleanup-helm          # Uninstall Helm release and delete namespaces
+make cleanup-docker-images # Remove Docker images locally and from Minikube
+make cleanup-certs         # Remove generated TLS certificates
+make cleanup-minikube      # Delete Minikube cluster, remove ~/.minikube, and stop Colima
 ```
-
-## Differences from Original Coastguard
-
-| Aspect | Original | Demo |
-|--------|----------|------|
-| Database | MySQL + Alembic | None |
-| Authentication | MyOrg SSO | None |
-| External APIs | YellowPages, Vault | Static config |
-| Image Registry | Artifactory | Public registry |
-| Metrics | Datadog | Logging only |
-| App Server | uWSGI + ddtrace | Flask dev server |
-| Proxy | OpenResty (nginx + Lua) | Plain nginx |
-| Cloud Provider | AWS EKS specific | Generic Kubernetes |
-| Infrastructure | Terraform-managed | Minikube |
 
 ## API Reference
 
 ### POST /api/v1/validate
 Kubernetes admission webhook for validation. Accepts `AdmissionReview` JSON.
-
-**Request:**
-```json
-{
-  "apiVersion": "admission.k8s.io/v1",
-  "kind": "AdmissionReview",
-  "request": { ... }
-}
-```
 
 **Response:**
 ```json
@@ -437,10 +415,8 @@ Kubernetes admission webhook for validation. Accepts `AdmissionReview` JSON.
   "kind": "AdmissionReview",
   "response": {
     "uid": "...",
-    "allowed": true/false,
-    "status": {
-      "message": "denial reason if not allowed"
-    }
+    "allowed": true,
+    "status": { "message": "denial reason if not allowed" }
   }
 }
 ```
@@ -468,13 +444,7 @@ List all active validators and mutators.
 **Response:**
 ```json
 {
-  "validators": [
-    {
-      "name": "ForbidPrivilegedMode",
-      "type": "validator",
-      "description": "Block privileged containers and privilege escalation."
-    }
-  ],
+  "validators": [{ "name": "ForbidPrivilegedMode", "type": "validator", "description": "..." }],
   "mutators": [...],
   "total_validators": 7,
   "total_mutators": 4
@@ -482,22 +452,14 @@ List all active validators and mutators.
 ```
 
 ### GET /api/v1/health
-Service health check.
-
-**Response:**
 ```json
-{
-  "status": "ok",
-  "validators_loaded": 7,
-  "mutators_loaded": 4
-}
+{ "status": "ok", "validators_loaded": 7, "mutators_loaded": 4 }
 ```
 
 ## Resources
 
 - [Kubernetes Admission Webhooks](https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/)
 - [RFC 6902 - JSON Patch](https://tools.ietf.org/html/rfc6902)
-- [Original Coastguard Project](../../cg/)
 - [Minikube Documentation](https://minikube.sigs.k8s.io/)
 
 ## License

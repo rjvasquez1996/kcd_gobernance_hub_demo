@@ -1,14 +1,18 @@
-.PHONY: help minikube-start minikube-stop minikube-status minikube-delete build build-app build-nginx docker-images push-images deploy create-namespace deploy-helm wait-deployments generate-certs generate-certs-fresh generate-certs-if-missing redeploy verify cleanup cleanup-helm cleanup-docker-images cleanup-certs test test-setup test-teardown test-policies test-privileged test-latest test-mutation test-labels logs logs-app logs-nginx shell ports port-forward exec-app exec-nginx check-deps helm-status full-clean
+.PHONY: help colima-start minikube-start minikube-stop minikube-status minikube-delete build build-app build-nginx docker-images push-images setup deploy create-namespace create-test-namespaces deploy-helm wait-deployments generate-certs generate-certs-fresh generate-certs-if-missing redeploy verify cleanup cleanup-helm cleanup-docker-images cleanup-certs cleanup-minikube test test-setup test-teardown test-policies test-privileged test-latest test-mutation test-labels logs logs-app logs-nginx shell ports port-forward exec-app exec-nginx check-deps helm-status
 
 # Variables
 NAMESPACE ?= governance-hub-demo
 TEST_NAMESPACE ?= governance-hub-test
-APP_IMAGE ?= governance-hub-app:latest
-NGINX_IMAGE ?= governance-hub-nginx:latest
+VALIDATOR_TEST_NAMESPACE ?= governance-hub-validator-test
+APP_IMAGE ?= governance-hub-app:v1
+NGINX_IMAGE ?= governance-hub-nginx:v1
 DOCKER_BUILDKIT ?= 1
-MINIKUBE_MEMORY ?= 4096
+MINIKUBE_MEMORY ?= 3072
 MINIKUBE_CPUS ?= 2
 MINIKUBE_DRIVER ?= docker
+COLIMA_MEMORY ?= 4
+COLIMA_CPUS ?= 2
+COLIMA_DISK ?= 60
 HELM_RELEASE ?= governance-hub
 CHART_PATH ?= ./governance-hub-chart
 NAMESPACE_TEAM ?= platform
@@ -34,16 +38,28 @@ help: ## Display this help message
 	@echo "  make cleanup         # Clean up everything"
 	@echo ""
 	@echo "$(BLUE)Quick Start:$(NC)"
-	@echo "  1. make minikube-start"
-	@echo "  2. make deploy"
-	@echo "  3. make verify"
-	@echo "  4. make test"
+	@echo "  1. make setup   # Full fresh setup (minikube + build + namespaces + webhook)"
+	@echo "  2. make test    # Run all integration tests"
 
 ##@ Minikube
-minikube-start: ## Start Minikube cluster
+colima-start: ## Start Colima with enough resources for Minikube (restarts if under-resourced)
+	@echo "$(BLUE)Starting Colima...$(NC)"
+	@CURRENT_MEM=$$(colima list 2>/dev/null | awk 'NR>1 && $$1=="default" {gsub(/GiB/,"",$$5); print int($$5)}'); \
+	if colima status 2>/dev/null | grep -q "Running" && [ "$${CURRENT_MEM:-0}" -ge "$(COLIMA_MEMORY)" ]; then \
+		echo "Colima already running with sufficient memory ($${CURRENT_MEM}GiB)"; \
+	else \
+		colima stop 2>/dev/null || true; \
+		colima start --cpu $(COLIMA_CPUS) --memory $(COLIMA_MEMORY) --disk $(COLIMA_DISK); \
+	fi
+	@echo "$(GREEN)✓ Colima started$(NC)"
+
+minikube-start: colima-start ## Start Minikube cluster (starts Colima first)
 	@echo "$(BLUE)Starting Minikube...$(NC)"
-	@minikube start --driver=$(MINIKUBE_DRIVER) --memory=$(MINIKUBE_MEMORY) --cpus=$(MINIKUBE_CPUS) 2>/dev/null || echo "Minikube already running"
-	@eval $$(minikube docker-env)
+	@if minikube status --format='{{.Host}}' 2>/dev/null | grep -q "Running"; then \
+		echo "Minikube already running"; \
+	else \
+		minikube start --driver=$(MINIKUBE_DRIVER) --cpus=$(MINIKUBE_CPUS); \
+	fi
 	@echo "$(GREEN)✓ Minikube started$(NC)"
 
 minikube-stop: ## Stop Minikube cluster
@@ -68,34 +84,51 @@ minikube-delete: ## Delete Minikube cluster (irreversible)
 ##@ Build
 build: build-app build-nginx ## Build all Docker images
 
-build-app: ## Build Flask app Docker image
+build-app: ## Build Flask app Docker image and load into Minikube
 	@echo "$(BLUE)Building governance-hub-app:latest...$(NC)"
-	@DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker build --no-cache -t $(APP_IMAGE) -f Dockerfile . --quiet
-	@echo "$(GREEN)✓ App image built: $(APP_IMAGE)$(NC)"
+	@unset DOCKER_TLS_VERIFY DOCKER_HOST DOCKER_CERT_PATH MINIKUBE_ACTIVE_DOCKERD && \
+	  DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker build --no-cache -t $(APP_IMAGE) -f Dockerfile . --quiet
+	@echo "$(BLUE)Loading $(APP_IMAGE) into Minikube...$(NC)"
+	@unset DOCKER_TLS_VERIFY DOCKER_HOST DOCKER_CERT_PATH MINIKUBE_ACTIVE_DOCKERD && \
+	  docker save $(APP_IMAGE) | docker exec -i minikube docker load
+	@echo "$(GREEN)✓ App image built and loaded: $(APP_IMAGE)$(NC)"
 
-build-nginx: ## Build nginx Docker image
+build-nginx: ## Build nginx Docker image and load into Minikube
 	@echo "$(BLUE)Building governance-hub-nginx:latest...$(NC)"
-	@DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker build --no-cache -t $(NGINX_IMAGE) -f Dockerfile.nginx . --quiet
-	@echo "$(GREEN)✓ Nginx image built: $(NGINX_IMAGE)$(NC)"
+	@unset DOCKER_TLS_VERIFY DOCKER_HOST DOCKER_CERT_PATH MINIKUBE_ACTIVE_DOCKERD && \
+	  DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker build --no-cache -t $(NGINX_IMAGE) -f Dockerfile.nginx . --quiet
+	@echo "$(BLUE)Loading $(NGINX_IMAGE) into Minikube...$(NC)"
+	@unset DOCKER_TLS_VERIFY DOCKER_HOST DOCKER_CERT_PATH MINIKUBE_ACTIVE_DOCKERD && \
+	  docker save $(NGINX_IMAGE) | docker exec -i minikube docker load
+	@echo "$(GREEN)✓ Nginx image built and loaded: $(NGINX_IMAGE)$(NC)"
 
 docker-images: ## List local Docker images
 	@echo "$(BLUE)Local governance-hub images:$(NC)"
 	@docker images | grep governance-hub || echo "No images found"
 
 ##@ Deployment
-deploy: minikube-start build create-namespace generate-certs-if-missing deploy-helm wait-deployments verify ## Full deployment pipeline
+setup: minikube-start build create-namespace create-test-namespaces generate-certs-if-missing deploy-helm wait-deployments verify ## Full fresh setup (creates all namespaces before webhook is active)
 
-create-namespace: ## Create Kubernetes namespace with required labels
-	@echo "$(BLUE)Creating namespace with labels...$(NC)"
+deploy: minikube-start build create-namespace generate-certs-if-missing deploy-helm wait-deployments verify ## Deploy base application (test namespaces must already exist)
+
+create-namespace: ## Create the base application namespace (governance-hub-demo)
+	@echo "$(BLUE)Creating namespace $(NAMESPACE) with labels...$(NC)"
 	@kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | \
 	kubectl patch -f - -p '{"metadata":{"labels":{"team":"$(NAMESPACE_TEAM)","environment":"$(NAMESPACE_ENV)"}}}' --type merge --dry-run=client -o yaml | \
 	kubectl apply -f - > /dev/null
 	@echo "$(GREEN)✓ Namespace ready (team: $(NAMESPACE_TEAM), environment: $(NAMESPACE_ENV))$(NC)"
-	@echo "$(BLUE)Creating test namespace $(TEST_NAMESPACE) before webhook is active...$(NC)"
+
+create-test-namespaces: ## Create test namespaces before the webhook is active (must run before deploy-helm)
+	@echo "$(BLUE)Creating test namespace $(TEST_NAMESPACE)...$(NC)"
 	@kubectl create namespace $(TEST_NAMESPACE) --dry-run=client -o yaml | \
 	kubectl patch -f - -p '{"metadata":{"labels":{"team":"$(NAMESPACE_TEAM)","environment":"$(NAMESPACE_ENV)"}}}' --type merge --dry-run=client -o yaml | \
 	kubectl apply -f - > /dev/null
 	@echo "$(GREEN)✓ Test namespace ready$(NC)"
+	@echo "$(BLUE)Creating validator test namespace $(VALIDATOR_TEST_NAMESPACE)...$(NC)"
+	@kubectl create namespace $(VALIDATOR_TEST_NAMESPACE) --dry-run=client -o yaml | \
+	kubectl patch -f - -p '{"metadata":{"labels":{"team":"$(NAMESPACE_TEAM)","environment":"$(NAMESPACE_ENV)"}}}' --type merge --dry-run=client -o yaml | \
+	kubectl apply -f - > /dev/null
+	@echo "$(GREEN)✓ Validator test namespace ready$(NC)"
 
 deploy-helm: ## Deploy or upgrade Helm release with current values
 	@echo "$(BLUE)Deploying governance-hub Helm chart...$(NC)"
@@ -136,11 +169,11 @@ generate-certs-if-missing: ## Generate TLS certificates only if they don't exist
 		echo "$(GREEN)✓ TLS certificates generated$(NC)"; \
 	fi
 	@echo "$(BLUE)Syncing TLS secret to cluster...$(NC)"
+	@kubectl delete secret governance-hub-tls --namespace=$(NAMESPACE) --ignore-not-found > /dev/null
 	@kubectl create secret tls governance-hub-tls \
 		--cert=k8s/tls/server.crt \
 		--key=k8s/tls/server.key \
-		--namespace=$(NAMESPACE) \
-		--dry-run=client -o yaml | kubectl apply -f - > /dev/null
+		--namespace=$(NAMESPACE) > /dev/null
 	@echo "$(GREEN)✓ TLS secret synced$(NC)"
 
 generate-certs: generate-certs-if-missing ## Alias for generate-certs-if-missing
@@ -195,17 +228,25 @@ unit-test-cov: ## Run unit tests with coverage report
 ##@ Integration Testing (requires running cluster)
 test: test-setup test-policies test-privileged test-latest test-mutation test-labels test-teardown ## Run all integration tests against cluster
 
-test-setup: ## Verify test namespace exists and clean up any leftover test pods
+test-setup: ## Verify test namespaces exist and clean up any leftover test pods
 	@echo "$(BLUE)Preparing test namespace $(TEST_NAMESPACE)...$(NC)"
 	@kubectl get namespace $(TEST_NAMESPACE) > /dev/null 2>&1 || \
 	  (echo "$(RED)✗ Test namespace $(TEST_NAMESPACE) not found. Run 'make create-namespace' first.$(NC)" && exit 1)
 	@kubectl delete pod --all -n $(TEST_NAMESPACE) --ignore-not-found > /dev/null 2>&1 || true
 	@echo "$(GREEN)✓ Test namespace ready$(NC)"
+	@echo "$(BLUE)Preparing validator test namespace $(VALIDATOR_TEST_NAMESPACE)...$(NC)"
+	@kubectl get namespace $(VALIDATOR_TEST_NAMESPACE) > /dev/null 2>&1 || \
+	  (echo "$(RED)✗ Validator test namespace $(VALIDATOR_TEST_NAMESPACE) not found. Run 'make create-namespace' first.$(NC)" && exit 1)
+	@kubectl delete pod --all -n $(VALIDATOR_TEST_NAMESPACE) --ignore-not-found > /dev/null 2>&1 || true
+	@echo "$(GREEN)✓ Validator test namespace ready$(NC)"
 
-test-teardown: ## Delete test namespace and all resources in it
+test-teardown: ## Delete test namespaces and all resources in them
 	@echo "$(BLUE)Cleaning up test namespace $(TEST_NAMESPACE)...$(NC)"
 	@kubectl delete namespace $(TEST_NAMESPACE) --ignore-not-found > /dev/null
 	@echo "$(GREEN)✓ Test namespace deleted$(NC)"
+	@echo "$(BLUE)Cleaning up validator test namespace $(VALIDATOR_TEST_NAMESPACE)...$(NC)"
+	@kubectl delete namespace $(VALIDATOR_TEST_NAMESPACE) --ignore-not-found > /dev/null
+	@echo "$(GREEN)✓ Validator test namespace deleted$(NC)"
 
 test-policies: ## Test policies endpoint
 	@echo "$(BLUE)Testing policies endpoint...$(NC)"
@@ -220,20 +261,20 @@ test-privileged: ## Test that privileged pods are blocked
 	@if kubectl run privileged-test \
 	  --image=alpine:3.18 \
 	  --overrides='{"spec":{"containers":[{"name":"test","image":"alpine:3.18","resources":{"limits":{"cpu":"100m","memory":"64Mi"}},"securityContext":{"privileged":true}}]}}' \
-	  -n $(TEST_NAMESPACE) 2>&1 | grep -qi "denied\|not allowed"; then \
+	  -n $(VALIDATOR_TEST_NAMESPACE) 2>&1 | grep -qi "denied\|not allowed"; then \
 	    echo "$(GREEN)✓ Privileged pod correctly rejected$(NC)"; \
 	else \
-	    kubectl delete pod privileged-test -n $(TEST_NAMESPACE) --ignore-not-found > /dev/null 2>&1; \
+	    kubectl delete pod privileged-test -n $(VALIDATOR_TEST_NAMESPACE) --ignore-not-found > /dev/null 2>&1; \
 	    echo "$(RED)✗ FAIL: Privileged pod was not rejected$(NC)"; exit 1; \
 	fi
 
 test-latest: ## Test that :latest images are blocked
 	@echo "$(BLUE)Testing: Reject :latest tag...$(NC)"
 	@echo "Expected: Pod creation should be denied"
-	@if kubectl run test-latest --image=alpine:latest -n $(TEST_NAMESPACE) 2>&1 | grep -qi "denied\|not allowed\|latest"; then \
+	@if kubectl run test-latest --image=alpine:latest -n $(VALIDATOR_TEST_NAMESPACE) 2>&1 | grep -qi "denied\|not allowed\|latest"; then \
 	    echo "$(GREEN)✓ Latest tag correctly rejected$(NC)"; \
 	else \
-	    kubectl delete pod test-latest -n $(TEST_NAMESPACE) --ignore-not-found > /dev/null 2>&1; \
+	    kubectl delete pod test-latest -n $(VALIDATOR_TEST_NAMESPACE) --ignore-not-found > /dev/null 2>&1; \
 	    echo "$(RED)✗ FAIL: Pod with :latest tag was not rejected$(NC)"; exit 1; \
 	fi
 
@@ -306,19 +347,22 @@ exec-nginx: ## Execute command in nginx pod (use COMMAND="...")
 	fi
 
 ##@ Cleanup
-cleanup: cleanup-helm cleanup-docker-images ## Full cleanup
+cleanup: cleanup-helm cleanup-docker-images cleanup-certs cleanup-minikube ## Full cleanup including Minikube config
 
 cleanup-helm: ## Uninstall Helm release and delete namespaces
 	@echo "$(BLUE)Uninstalling Helm release...$(NC)"
 	@helm uninstall $(HELM_RELEASE) --namespace $(NAMESPACE) 2>/dev/null || true
 	@kubectl delete namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@kubectl delete namespace $(TEST_NAMESPACE) --ignore-not-found 2>/dev/null || true
+	@kubectl delete namespace $(VALIDATOR_TEST_NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@echo "$(GREEN)✓ Helm release uninstalled$(NC)"
 
-cleanup-docker-images: ## Remove local Docker images
+cleanup-docker-images: ## Remove local Docker images and unload from Minikube
 	@echo "$(BLUE)Removing Docker images...$(NC)"
 	@docker rmi -f $(APP_IMAGE) 2>/dev/null || true
 	@docker rmi -f $(NGINX_IMAGE) 2>/dev/null || true
+	@docker exec minikube docker rmi -f $(APP_IMAGE) 2>/dev/null || true
+	@docker exec minikube docker rmi -f $(NGINX_IMAGE) 2>/dev/null || true
 	@echo "$(GREEN)✓ Docker images removed$(NC)"
 
 cleanup-certs: ## Remove generated TLS certificates
@@ -326,7 +370,14 @@ cleanup-certs: ## Remove generated TLS certificates
 	@rm -f k8s/tls/*.key k8s/tls/*.crt k8s/tls/*.csr k8s/tls/*.srl
 	@echo "$(GREEN)✓ Certificates removed$(NC)"
 
-full-clean: cleanup cleanup-certs minikube-delete ## Complete cleanup including Minikube
+cleanup-minikube: ## Delete Minikube cluster, remove its config, and stop Colima
+	@echo "$(BLUE)Deleting Minikube cluster...$(NC)"
+	@minikube delete 2>/dev/null || true
+	@rm -rf $(HOME)/.minikube 2>/dev/null || true
+	@echo "$(GREEN)✓ Minikube cluster and config removed$(NC)"
+	@echo "$(BLUE)Stopping Colima...$(NC)"
+	@colima stop 2>/dev/null || true
+	@echo "$(GREEN)✓ Colima stopped$(NC)"
 
 helm-status: ## Show Helm release status
 	@helm status $(HELM_RELEASE) --namespace $(NAMESPACE) 2>/dev/null || echo "No Helm release found"
