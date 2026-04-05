@@ -1,0 +1,28 @@
+{
+  "apiVersion": "admission.k8s.io/v1",
+  "kind": "AdmissionReview",
+  "request": {
+    "uid": "test-uid-with-class-ingress",
+    "operation": "CREATE",
+    "kind": { "group": "networking.k8s.io", "version": "v1", "kind": "Ingress" },
+    "resource": { "group": "networking.k8s.io", "version": "v1", "resource": "ingresses" },
+    "namespace": "default",
+    "object": {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "with-class-ingress",
+        "namespace": "default"
+      },
+      "spec": {
+        "ingressClassName": "traefik",
+        "tls": [
+          { "hosts": ["app.example.com"], "secretName": "app-tls" }
+        ],
+        "rules": [
+          { "host": "app.example.com" }
+        ]
+      }
+    }
+  }
+}

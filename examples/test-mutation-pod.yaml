@@ -1,0 +1,13 @@
+# Mutation test pod - no resources or labels set.
+# The mutating webhook should inject default resources and governance labels.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-mutation-pod
+spec:
+  containers:
+  - name: app
+    image: alpine:3.18
+    command:
+    - sleep
+    - "3600"

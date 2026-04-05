@@ -1,0 +1,30 @@
+{
+  "apiVersion": "admission.k8s.io/v1",
+  "kind": "AdmissionReview",
+  "request": {
+    "uid": "test-uid-untagged-pod",
+    "operation": "CREATE",
+    "kind": { "group": "", "version": "v1", "kind": "Pod" },
+    "resource": { "group": "", "version": "v1", "resource": "pods" },
+    "namespace": "default",
+    "object": {
+      "apiVersion": "v1",
+      "kind": "Pod",
+      "metadata": {
+        "name": "untagged-pod",
+        "namespace": "default"
+      },
+      "spec": {
+        "containers": [
+          {
+            "name": "app",
+            "image": "nginx",
+            "resources": {
+              "limits": { "cpu": "500m", "memory": "256Mi" }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

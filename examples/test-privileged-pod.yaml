@@ -1,5 +1,6 @@
 # INVALID - Privileged pod
-# This should be rejected by ForbidPrivilegedMode validator
+# This should be rejected by ForbidPrivilegedMode validator.
+# Resources are explicitly set so RequireResourceLimits does not interfere.
 apiVersion: v1
 kind: Pod
 metadata:

@@ -1,5 +1,7 @@
 """Base mutator class and registration mechanism."""
 
+import os
+
 _mutators = []
 
 
@@ -10,8 +12,17 @@ def registered_as_mutator(mutator_class):
 
 
 def get_mutators():
-    """Get all registered mutators."""
-    return _mutators
+    """Get all registered mutators, filtered by ENABLED_MUTATORS env var.
+
+    If ENABLED_MUTATORS is not set, all mutators are returned.
+    Otherwise, only mutators whose class names appear in the comma-separated list are returned.
+    """
+    enabled = os.environ.get('ENABLED_MUTATORS', '')
+    if not enabled:
+        return _mutators
+
+    enabled_set = set(name.strip() for name in enabled.split(',') if name.strip())
+    return [m for m in _mutators if m.__name__ in enabled_set]
 
 
 class Mutator:

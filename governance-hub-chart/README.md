@@ -105,18 +105,25 @@ helm uninstall governance-hub
 ### Validating Webhook
 
 The validating webhook enforces policies:
-- Blocks privileged containers
-- Requires resource limits
-- Forbids `:latest` image tags
-- Requires namespace labels
-- Enforces ingress TLS configuration
+- `ForbidPrivilegedMode` — Blocks privileged containers and privilege escalation
+- `RequireResourceLimits` — Requires CPU and memory limits on all containers
+- `ForbidLatestTag` — Blocks `:latest` or untagged images
+- `NoDirectNamespaceCreation` — Blocks direct namespace CREATE operations
+- `RequiredLabelsCheck` — Requires `team` and `environment` labels on namespaces
+- `IngressTLSRequired` — Requires TLS on all Ingress resources
+- `IngressRuleLimit` — Limits number of rules per Ingress (default: 5)
+
+Each validator can be enabled/disabled individually via `policies.validators` in `values.yaml`.
 
 ### Mutating Webhook
 
 The mutating webhook automatically modifies resources:
-- Injects governance labels
-- Adds default resource limits
-- Sets default ingress class
+- `CommonLabelsMutator` — Injects governance labels on pods
+- `DefaultResourcesMutator` — Adds default resource requests/limits (100m CPU, 128Mi memory)
+- `RemoveKubectlAnnotationMutator` — Removes `kubectl.kubernetes.io/last-applied-configuration` from namespaces
+- `IngressClassDefaultMutator` — Sets `ingressClassName: nginx` if not specified
+
+Each mutator can be enabled/disabled individually via `policies.mutators` in `values.yaml`.
 
 ## Customizing Webhooks
 
@@ -142,13 +149,13 @@ webhookRules:
 
 1. Check webhook configurations:
    ```bash
-   kubectl describe validatingwebhookconfigurations governance-hub-validator
-   kubectl describe mutatingwebhookconfigurations governance-hub-mutator
+   kubectl describe validatingwebhookconfigurations governance-hub-demo-validator
+   kubectl describe mutatingwebhookconfigurations governance-hub-demo-mutator
    ```
 
 2. Verify CA bundle is set correctly:
    ```bash
-   kubectl get validatingwebhookconfigurations governance-hub-validator -o yaml
+   kubectl get validatingwebhookconfigurations governance-hub-demo-validator -o yaml
    ```
 
 3. Check pod logs:

@@ -1,0 +1,20 @@
+{
+  "apiVersion": "admission.k8s.io/v1",
+  "kind": "AdmissionReview",
+  "request": {
+    "uid": "test-uid-ns-kubectl-annotation",
+    "operation": "UPDATE",
+    "kind": { "group": "", "version": "v1", "kind": "Namespace" },
+    "resource": { "group": "", "version": "v1", "resource": "namespaces" },
+    "object": {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "metadata": {
+        "name": "team-alpha",
+        "annotations": {
+          "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"Namespace\",\"metadata\":{\"name\":\"team-alpha\"}}"
+        }
+      }
+    }
+  }
+}

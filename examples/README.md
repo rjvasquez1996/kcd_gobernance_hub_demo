@@ -52,7 +52,7 @@ Expected behavior:
 ### Test 4: Pod Without Resources (Should Pass + Mutate)
 
 ```bash
-kubectl apply -f test-no-resources-pod.yaml
+kubectl apply -f test-mutation-pod.yaml
 ```
 
 Expected behavior:
@@ -62,7 +62,7 @@ Expected behavior:
 
 Verify resources were injected:
 ```bash
-kubectl get pod no-resources-test-pod -o jsonpath='{.spec.containers[0].resources}' | jq .
+kubectl get pod test-mutation-pod -o jsonpath='{.spec.containers[0].resources}' | jq .
 ```
 
 Expected output:
@@ -113,19 +113,12 @@ kubectl get ingress valid-ingress -o jsonpath='{.spec.ingressClassName}'
 
 ## Clean Up
 
-Remove all test resources:
+Remove test resources by file:
 
 ```bash
-# Remove all pods
-kubectl delete pods --all
-
-# Remove all ingresses
-kubectl delete ingresses --all
-
-# Or selectively:
-kubectl delete -f test-valid-pod.yaml
-kubectl delete -f test-no-resources-pod.yaml
-kubectl delete -f test-valid-ingress.yaml
+kubectl delete -f test-valid-pod.yaml --ignore-not-found
+kubectl delete -f test-mutation-pod.yaml --ignore-not-found
+kubectl delete -f test-valid-ingress.yaml --ignore-not-found
 ```
 
 ---

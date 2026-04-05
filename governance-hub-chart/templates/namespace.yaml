@@ -1,6 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: {{ include "governance-hub.namespace" . }}
-  labels:
-    {{- include "governance-hub.labels" . | nindent 4 }}

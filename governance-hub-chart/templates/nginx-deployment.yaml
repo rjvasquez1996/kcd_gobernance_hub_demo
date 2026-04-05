@@ -72,3 +72,8 @@ spec:
       - name: tls-certs
         secret:
           secretName: {{ .Values.tls.secretName }}
+          items:
+          - key: tls.crt
+            path: server.crt
+          - key: tls.key
+            path: server.key

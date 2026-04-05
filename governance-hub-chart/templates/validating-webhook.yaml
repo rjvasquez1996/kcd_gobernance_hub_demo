@@ -17,6 +17,14 @@ webhooks:
     {{- if .Values.tls.caBundle }}
     caBundle: {{ .Values.tls.caBundle | quote }}
     {{- end }}
+  namespaceSelector:
+    matchExpressions:
+    - key: kubernetes.io/metadata.name
+      operator: NotIn
+      values:
+      {{- range .Values.excludedNamespaces }}
+      - {{ . }}
+      {{- end }}
   rules:
   - operations: {{ .Values.webhookRules.operations | toJson }}
     apiGroups: {{ .Values.webhookRules.apiGroups | toJson }}

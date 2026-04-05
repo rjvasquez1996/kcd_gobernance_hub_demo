@@ -38,6 +38,22 @@ spec:
         - name: {{ $key }}
           value: {{ $value | quote }}
         {{- end }}
+        {{- $validators := list }}
+        {{- range $name, $enabled := .Values.policies.validators }}
+          {{- if $enabled }}
+            {{- $validators = append $validators $name }}
+          {{- end }}
+        {{- end }}
+        - name: ENABLED_VALIDATORS
+          value: {{ join "," $validators | quote }}
+        {{- $mutators := list }}
+        {{- range $name, $enabled := .Values.policies.mutators }}
+          {{- if $enabled }}
+            {{- $mutators = append $mutators $name }}
+          {{- end }}
+        {{- end }}
+        - name: ENABLED_MUTATORS
+          value: {{ join "," $mutators | quote }}
         {{- if .Values.app.livenessProbe.enabled }}
         livenessProbe:
           httpGet:

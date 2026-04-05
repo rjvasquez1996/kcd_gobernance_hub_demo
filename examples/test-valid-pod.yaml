@@ -1,4 +1,5 @@
-# Valid pod - should be accepted and mutated (labels/resources added)
+# Valid pod - should be accepted and mutated (governance labels injected)
+# Resources are already set; only labels will be added by the mutating webhook.
 apiVersion: v1
 kind: Pod
 metadata:

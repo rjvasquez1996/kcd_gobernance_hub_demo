@@ -136,7 +136,7 @@ helm upgrade governance-hub ./governance-hub-chart \
 
 ### Rollback to previous version
 ```bash
-helm rollout history governance-hub
+helm history governance-hub
 helm rollback governance-hub 1  # Rollback to revision 1
 ```
 
@@ -195,11 +195,11 @@ kubectl logs <pod-name> -n governance-hub-demo
 ### Webhooks not triggering?
 ```bash
 # Check webhook configurations
-kubectl describe validatingwebhookconfigurations governance-hub-validator
-kubectl describe mutatingwebhookconfigurations governance-hub-mutator
+kubectl describe validatingwebhookconfigurations governance-hub-demo-validator
+kubectl describe mutatingwebhookconfigurations governance-hub-demo-mutator
 
 # Verify CA bundle is set
-kubectl get validatingwebhookconfigurations governance-hub-validator -o yaml | grep caBundle
+kubectl get validatingwebhookconfigurations governance-hub-demo-validator -o yaml | grep caBundle
 ```
 
 ### Want to see what's deployed?

@@ -74,110 +74,72 @@ Governance Hub implements two types of Kubernetes admission webhooks:
 
 ## Quick Start
 
-> **Note**: TLS certificates are not included in the repository and must be generated on first deployment. The `generate-certs.sh` script will create them automatically during the deployment process (Step 6 below).
+The fastest path is using `make deploy`, which handles everything automatically.
 
-### 1. Start Minikube
+### 1. Navigate to Demo Directory
 
 ```bash
+cd demo/
+```
+
+### 2. Full Deployment (one command)
+
+```bash
+make deploy
+```
+
+This single command will:
+- Start Minikube (if not already running)
+- Build Docker images (`--no-cache`)
+- Create namespaces (`governance-hub-demo` and `governance-hub-test`)
+- Generate TLS certificates (if missing)
+- Deploy everything via Helm
+- Wait for deployments to be ready
+- Print a verification summary
+
+### 3. Verify
+
+```bash
+make verify
+```
+
+### 4. Run Integration Tests
+
+```bash
+make test
+```
+
+### 5. Run Unit Tests (no cluster required)
+
+```bash
+make unit-test
+```
+
+---
+
+### Manual Deployment (step by step)
+
+If you prefer manual control:
+
+```bash
+# 1. Start Minikube
 minikube start --driver=docker --memory 4096 --cpus 2
-```
-
-### 2. Configure Docker to Use Minikube's Docker Daemon
-
-```bash
 eval $(minikube docker-env)
-```
 
-### 3. Navigate to Demo Directory
+# 2. Build images
+make build
 
-```bash
-cd /Users/ricardovasquez/test/kcd/demo
-```
+# 3. Create namespaces (must happen before webhooks are active)
+make create-namespace
 
-### 4. Build Docker Images
+# 4. Generate TLS certificates
+make generate-certs-if-missing
 
-```bash
-# Build Flask app image
-docker build -t governance-hub-app:latest -f Dockerfile .
+# 5. Deploy via Helm
+make deploy-helm
 
-# Build nginx proxy image
-docker build -t governance-hub-nginx:latest -f Dockerfile.nginx .
-```
-
-Verify images were built:
-```bash
-docker images | grep governance-hub
-```
-
-### 5. Create Namespace and Apply Base Manifests
-
-```bash
-# Create the namespace first
-kubectl apply -f k8s/namespace.yaml
-
-# Create nginx ConfigMap and app deployment
-kubectl apply -f k8s/app-deployment.yaml \
-              -f k8s/app-service.yaml \
-              -f k8s/nginx-configmap.yaml \
-              -f k8s/nginx-deployment.yaml \
-              -f k8s/nginx-service.yaml
-```
-
-### 6. Generate TLS Certificates
-
-```bash
-# Make script executable
-chmod +x k8s/tls/generate-certs.sh
-
-# Generate certificates and create Kubernetes secret
-cd k8s/tls
-./generate-certs.sh
-cd ../..
-```
-
-**Important**: Save the base64-encoded CA certificate output - you'll need it in the next step.
-
-### 7. Update Webhook Configurations with CA Certificate
-
-Edit the CA certificate placeholder in the webhook configurations:
-
-```bash
-# Get the base64-encoded CA certificate
-CA_BUNDLE=$(base64 < k8s/tls/ca.crt | tr -d '\n')
-
-# Update validating webhook
-sed -i.bak "s|caBundle: \"\"|caBundle: \"$CA_BUNDLE\"|" k8s/validating-webhook.yaml
-
-# Update mutating webhook
-sed -i.bak "s|caBundle: \"\"|caBundle: \"$CA_BUNDLE\"|" k8s/mutating-webhook.yaml
-```
-
-Or manually copy the CA certificate from the `generate-certs.sh` output into both YAML files.
-
-### 8. Apply Webhook Configurations
-
-```bash
-kubectl apply -f k8s/validating-webhook.yaml \
-              -f k8s/mutating-webhook.yaml
-```
-
-### 9. Verify Deployment
-
-```bash
-# Check that pods are running
-kubectl get pods -n governance-hub-demo
-
-# Expected output:
-# NAME                                READY   STATUS    RESTARTS   AGE
-# governance-hub-app-xxxxxxxxxx-xxxxx     1/1     Running   0          XXs
-# governance-hub-nginx-xxxxxxxxxx-xxxxx   1/1     Running   0          XXs
-
-# Check service endpoints
-kubectl get svc -n governance-hub-demo
-
-# Check webhook configurations
-kubectl get validatingwebhookconfigurations
-kubectl get mutatingwebhookconfigurations
+# 6. Wait for pods
+make wait-deployments
 ```
 
 ## Testing the Demo
@@ -198,69 +160,57 @@ wget -O - http://governance-hub-app:5000/api/v1/policies
 
 ### Test 2: Test Validator - Reject Privileged Pod
 
+> **Note**: Run these tests in `governance-hub-test` namespace — `governance-hub-demo` is excluded from webhook interception.
+
 ```bash
-# Try to create a privileged pod
-kubectl run --rm -it privileged-test \
-  --image=alpine \
-  --overrides='{"spec": {"containers": [{"name": "test", "image": "alpine", "securityContext": {"privileged": true}}]}}' \
-  -- sh
+kubectl run privileged-test \
+  --image=alpine:3.18 \
+  --overrides='{"spec":{"containers":[{"name":"test","image":"alpine:3.18","resources":{"limits":{"cpu":"100m","memory":"64Mi"}},"securityContext":{"privileged":true}}]}}' \
+  -n governance-hub-test
 ```
 
 Expected: Pod creation is denied with message about privileged mode not allowed.
 
-### Test 3: Test Validator - Reject Untagged Image
+### Test 3: Test Validator - Reject Latest Tag
 
 ```bash
-kubectl run test-latest --image=alpine:latest
+kubectl run test-latest --image=alpine:latest -n governance-hub-test
 ```
 
 Expected: Pod creation is denied because `:latest` tag is not allowed.
 
 ### Test 4: Test Mutator - Resource Limits Injection
 
-Create a pod without resource limits:
-
 ```bash
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: test-mutation
-spec:
-  containers:
-  - name: app
-    image: alpine:3.18
-    command: ['sleep', '3600']
-EOF
-```
-
-Then inspect the created pod:
-
-```bash
-kubectl get pod test-mutation -o yaml | grep -A10 resources
+kubectl apply -f examples/test-mutation-pod.yaml -n governance-hub-test
+kubectl get pod test-mutation-pod -n governance-hub-test \
+  -o jsonpath='{.spec.containers[0].resources}' | jq .
 ```
 
 Expected: Resource requests and limits have been automatically injected (100m CPU, 128Mi memory).
 
 ### Test 5: Test Mutator - Label Injection
 
-Check that the pod has governance labels:
-
 ```bash
-kubectl get pod test-mutation -o yaml | grep -A5 labels
+kubectl get pod test-mutation-pod -n governance-hub-test \
+  -o jsonpath='{.metadata.labels}' | jq .
 ```
 
 Expected: Labels `app.kubernetes.io/managed-by: governance-hub-demo` and `governance/policy-version: v1` are present.
 
 ### Test 6: Test Namespace Validation
 
-Try to create a namespace directly:
-
 ```bash
 kubectl create namespace test-namespace
 ```
 
 Expected: Creation is denied with message about direct namespace creation not allowed.
+
+### Run All Integration Tests
+
+```bash
+make test
+```
 
 ### Test 7: Direct API Testing (Advanced)
 
@@ -433,17 +383,22 @@ class MyMutator(Mutator):
 
 ## Cleanup
 
-To delete the demo deployment:
+```bash
+# Full cleanup (Helm uninstall + both namespaces + Docker images)
+make cleanup
+
+# Also remove TLS certificates
+make cleanup-certs
+
+# Nuclear option: delete everything including Minikube
+make full-clean
+```
+
+Or manually:
 
 ```bash
-# Delete webhook configurations first (to avoid hanging deletions)
-kubectl delete validatingwebhookconfigurations governance-hub-validator
-kubectl delete mutatingwebhookconfigurations governance-hub-mutator
-
-# Delete the namespace (cascades to all resources)
-kubectl delete namespace governance-hub-demo
-
-# Stop Minikube
+helm uninstall governance-hub --namespace governance-hub-demo
+kubectl delete namespace governance-hub-demo governance-hub-test --ignore-not-found
 minikube stop
 ```
 

@@ -1,13 +1,18 @@
-.PHONY: help minikube-start minikube-stop minikube-status build build-app build-nginx docker-images push-images deploy deploy-base wait-deployments generate-certs generate-certs-fresh generate-certs-if-missing update-webhooks deploy-webhooks verify cleanup test test-policies test-privileged test-latest test-mutation test-labels logs logs-app logs-nginx shell ports exec-app exec-nginx
+.PHONY: help minikube-start minikube-stop minikube-status minikube-delete build build-app build-nginx docker-images push-images deploy create-namespace deploy-helm wait-deployments generate-certs generate-certs-fresh generate-certs-if-missing redeploy verify cleanup cleanup-helm cleanup-docker-images cleanup-certs test test-setup test-teardown test-policies test-privileged test-latest test-mutation test-labels logs logs-app logs-nginx shell ports port-forward exec-app exec-nginx check-deps helm-status full-clean
 
 # Variables
 NAMESPACE ?= governance-hub-demo
+TEST_NAMESPACE ?= governance-hub-test
 APP_IMAGE ?= governance-hub-app:latest
 NGINX_IMAGE ?= governance-hub-nginx:latest
 DOCKER_BUILDKIT ?= 1
 MINIKUBE_MEMORY ?= 4096
 MINIKUBE_CPUS ?= 2
 MINIKUBE_DRIVER ?= docker
+HELM_RELEASE ?= governance-hub
+CHART_PATH ?= ./governance-hub-chart
+NAMESPACE_TEAM ?= platform
+NAMESPACE_ENV ?= dev
 
 # Color output
 BLUE := \033[0;34m
@@ -65,12 +70,12 @@ build: build-app build-nginx ## Build all Docker images
 
 build-app: ## Build Flask app Docker image
 	@echo "$(BLUE)Building governance-hub-app:latest...$(NC)"
-	@DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker build -t $(APP_IMAGE) -f Dockerfile . --quiet
+	@DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker build --no-cache -t $(APP_IMAGE) -f Dockerfile . --quiet
 	@echo "$(GREEN)✓ App image built: $(APP_IMAGE)$(NC)"
 
 build-nginx: ## Build nginx Docker image
 	@echo "$(BLUE)Building governance-hub-nginx:latest...$(NC)"
-	@DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker build -t $(NGINX_IMAGE) -f Dockerfile.nginx . --quiet
+	@DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker build --no-cache -t $(NGINX_IMAGE) -f Dockerfile.nginx . --quiet
 	@echo "$(GREEN)✓ Nginx image built: $(NGINX_IMAGE)$(NC)"
 
 docker-images: ## List local Docker images
@@ -78,17 +83,35 @@ docker-images: ## List local Docker images
 	@docker images | grep governance-hub || echo "No images found"
 
 ##@ Deployment
-deploy: minikube-start build deploy-base wait-deployments generate-certs-if-missing update-webhooks deploy-webhooks verify ## Full deployment pipeline
+deploy: minikube-start build create-namespace generate-certs-if-missing deploy-helm wait-deployments verify ## Full deployment pipeline
 
-deploy-base: ## Apply base Kubernetes manifests
-	@echo "$(BLUE)Creating namespace and applying base manifests...$(NC)"
-	@kubectl apply -f k8s/namespace.yaml > /dev/null
-	@kubectl apply -f k8s/app-deployment.yaml \
-	                -f k8s/app-service.yaml \
-	                -f k8s/nginx-configmap.yaml \
-	                -f k8s/nginx-deployment.yaml \
-	                -f k8s/nginx-service.yaml > /dev/null
-	@echo "$(GREEN)✓ Base manifests applied$(NC)"
+create-namespace: ## Create Kubernetes namespace with required labels
+	@echo "$(BLUE)Creating namespace with labels...$(NC)"
+	@kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | \
+	kubectl patch -f - -p '{"metadata":{"labels":{"team":"$(NAMESPACE_TEAM)","environment":"$(NAMESPACE_ENV)"}}}' --type merge --dry-run=client -o yaml | \
+	kubectl apply -f - > /dev/null
+	@echo "$(GREEN)✓ Namespace ready (team: $(NAMESPACE_TEAM), environment: $(NAMESPACE_ENV))$(NC)"
+	@echo "$(BLUE)Creating test namespace $(TEST_NAMESPACE) before webhook is active...$(NC)"
+	@kubectl create namespace $(TEST_NAMESPACE) --dry-run=client -o yaml | \
+	kubectl patch -f - -p '{"metadata":{"labels":{"team":"$(NAMESPACE_TEAM)","environment":"$(NAMESPACE_ENV)"}}}' --type merge --dry-run=client -o yaml | \
+	kubectl apply -f - > /dev/null
+	@echo "$(GREEN)✓ Test namespace ready$(NC)"
+
+deploy-helm: ## Deploy or upgrade Helm release with current values
+	@echo "$(BLUE)Deploying governance-hub Helm chart...$(NC)"
+	@if [ ! -f k8s/tls/ca.crt ]; then \
+		echo "$(RED)Error: TLS certificate not found at k8s/tls/ca.crt$(NC)"; \
+		echo "$(BLUE)Run 'make generate-certs-if-missing' first$(NC)"; \
+		exit 1; \
+	fi
+	@CA_BUNDLE=$$(base64 < k8s/tls/ca.crt | tr -d '\n'); \
+	helm upgrade --install $(HELM_RELEASE) $(CHART_PATH) \
+	    --namespace $(NAMESPACE) \
+	    --set-string tls.caBundle="$$CA_BUNDLE" \
+	    --set-string namespaceLabels.team="$(NAMESPACE_TEAM)" \
+	    --set-string namespaceLabels.environment="$(NAMESPACE_ENV)" \
+	    --wait
+	@echo "$(GREEN)✓ Helm release deployed$(NC)"
 
 wait-deployments: ## Wait for deployments to be ready
 	@echo "$(BLUE)Waiting for deployments to be ready...$(NC)"
@@ -103,39 +126,41 @@ generate-certs-fresh: ## Generate fresh TLS certificates (overwrites existing)
 	@cd k8s/tls && chmod +x generate-certs.sh && ./generate-certs.sh > /dev/null 2>&1
 	@echo "$(GREEN)✓ TLS certificates generated$(NC)"
 
-generate-certs-if-missing: ## Generate TLS certificates only if they don't exist
+generate-certs-if-missing: ## Generate TLS certificates only if they don't exist; always syncs the K8s secret
 	@echo "$(BLUE)Checking for existing TLS certificates...$(NC)"
 	@if [ -f k8s/tls/ca.crt ] && [ -f k8s/tls/server.crt ] && [ -f k8s/tls/server.key ]; then \
-		echo "$(GREEN)✓ TLS certificates already exist, skipping generation$(NC)"; \
+		echo "$(GREEN)✓ TLS certificate files exist$(NC)"; \
 	else \
 		echo "$(BLUE)Generating TLS certificates...$(NC)"; \
 		cd k8s/tls && chmod +x generate-certs.sh && ./generate-certs.sh > /dev/null 2>&1; \
 		echo "$(GREEN)✓ TLS certificates generated$(NC)"; \
 	fi
+	@echo "$(BLUE)Syncing TLS secret to cluster...$(NC)"
+	@kubectl create secret tls governance-hub-tls \
+		--cert=k8s/tls/server.crt \
+		--key=k8s/tls/server.key \
+		--namespace=$(NAMESPACE) \
+		--dry-run=client -o yaml | kubectl apply -f - > /dev/null
+	@echo "$(GREEN)✓ TLS secret synced$(NC)"
 
 generate-certs: generate-certs-if-missing ## Alias for generate-certs-if-missing
 
-update-webhooks: ## Update webhook configs with CA certificate
-	@echo "$(BLUE)Updating webhook configurations with CA certificate...$(NC)"
-	@export CA_BUNDLE=$$(base64 < k8s/tls/ca.crt | tr -d '\n'); \
-	sed -i.bak "s|caBundle: \"\"|caBundle: \"$$CA_BUNDLE\"|" k8s/validating-webhook.yaml; \
-	sed -i.bak "s|caBundle: \"\"|caBundle: \"$$CA_BUNDLE\"|" k8s/mutating-webhook.yaml; \
-	rm -f k8s/*.bak
-	@echo "$(GREEN)✓ Webhook configurations updated$(NC)"
-
-deploy-webhooks: ## Apply webhook configurations
-	@echo "$(BLUE)Applying webhook configurations...$(NC)"
-	@kubectl apply -f k8s/validating-webhook.yaml \
-	                -f k8s/mutating-webhook.yaml > /dev/null
-	@sleep 2
-	@echo "$(GREEN)✓ Webhooks deployed$(NC)"
-
-redeploy: ## Restart all deployments
-	@echo "$(BLUE)Restarting deployments...$(NC)"
-	@kubectl rollout restart deployment/governance-hub-app -n $(NAMESPACE)
-	@kubectl rollout restart deployment/governance-hub-nginx -n $(NAMESPACE)
+redeploy: build create-namespace generate-certs-if-missing ## Rebuild Docker images and redeploy via Helm
+	@echo "$(BLUE)Redeploying with new images...$(NC)"
+	@if [ ! -f k8s/tls/ca.crt ]; then \
+		echo "$(RED)Error: TLS certificate not found at k8s/tls/ca.crt$(NC)"; \
+		exit 1; \
+	fi
+	@CA_BUNDLE=$$(base64 < k8s/tls/ca.crt | tr -d '\n'); \
+	helm upgrade --install $(HELM_RELEASE) $(CHART_PATH) \
+	    --namespace $(NAMESPACE) \
+	    --set-string tls.caBundle="$$CA_BUNDLE" \
+	    --set-string namespaceLabels.team="$(NAMESPACE_TEAM)" \
+	    --set-string namespaceLabels.environment="$(NAMESPACE_ENV)"
+	@kubectl rollout restart deployment/governance-hub-app -n $(NAMESPACE) 2>/dev/null || true
+	@kubectl rollout restart deployment/governance-hub-nginx -n $(NAMESPACE) 2>/dev/null || true
 	@make wait-deployments
-	@echo "$(GREEN)✓ Deployments restarted$(NC)"
+	@echo "$(GREEN)✓ Redeploy complete$(NC)"
 
 ##@ Verification
 verify: ## Verify deployment status
@@ -153,8 +178,34 @@ verify: ## Verify deployment status
 	@echo ""
 	@echo "$(GREEN)✓ Verification complete$(NC)"
 
-##@ Testing
-test: test-policies test-privileged test-latest test-mutation test-labels ## Run all tests
+##@ Unit Testing (no cluster required)
+unit-test: ## Run unit tests locally with pytest
+	@echo "$(BLUE)Installing test dependencies...$(NC)"
+	@pip install -r requirements-test.txt -q
+	@echo "$(BLUE)Running unit tests...$(NC)"
+	@pytest tests/ -v
+	@echo "$(GREEN)✓ Unit tests passed$(NC)"
+
+unit-test-cov: ## Run unit tests with coverage report
+	@echo "$(BLUE)Running unit tests with coverage...$(NC)"
+	@pip install -r requirements-test.txt -q
+	@pytest tests/ -v --cov=validators --cov=mutators --cov=api --cov-report=term-missing
+	@echo "$(GREEN)✓ Coverage report complete$(NC)"
+
+##@ Integration Testing (requires running cluster)
+test: test-setup test-policies test-privileged test-latest test-mutation test-labels test-teardown ## Run all integration tests against cluster
+
+test-setup: ## Verify test namespace exists and clean up any leftover test pods
+	@echo "$(BLUE)Preparing test namespace $(TEST_NAMESPACE)...$(NC)"
+	@kubectl get namespace $(TEST_NAMESPACE) > /dev/null 2>&1 || \
+	  (echo "$(RED)✗ Test namespace $(TEST_NAMESPACE) not found. Run 'make create-namespace' first.$(NC)" && exit 1)
+	@kubectl delete pod --all -n $(TEST_NAMESPACE) --ignore-not-found > /dev/null 2>&1 || true
+	@echo "$(GREEN)✓ Test namespace ready$(NC)"
+
+test-teardown: ## Delete test namespace and all resources in it
+	@echo "$(BLUE)Cleaning up test namespace $(TEST_NAMESPACE)...$(NC)"
+	@kubectl delete namespace $(TEST_NAMESPACE) --ignore-not-found > /dev/null
+	@echo "$(GREEN)✓ Test namespace deleted$(NC)"
 
 test-policies: ## Test policies endpoint
 	@echo "$(BLUE)Testing policies endpoint...$(NC)"
@@ -166,29 +217,46 @@ test-policies: ## Test policies endpoint
 test-privileged: ## Test that privileged pods are blocked
 	@echo "$(BLUE)Testing: Reject privileged pod...$(NC)"
 	@echo "Expected: Pod creation should be denied"
-	@kubectl run --rm -it privileged-test \
-	  --image=alpine \
-	  --overrides='{"spec": {"containers": [{"name": "test", "image": "alpine", "securityContext": {"privileged": true}}]}}' \
-	  -n $(NAMESPACE) \
-	  -- sh -c "echo 'Pod created'" 2>&1 || echo "$(GREEN)✓ Privileged pod correctly rejected$(NC)"
+	@if kubectl run privileged-test \
+	  --image=alpine:3.18 \
+	  --overrides='{"spec":{"containers":[{"name":"test","image":"alpine:3.18","resources":{"limits":{"cpu":"100m","memory":"64Mi"}},"securityContext":{"privileged":true}}]}}' \
+	  -n $(TEST_NAMESPACE) 2>&1 | grep -qi "denied\|not allowed"; then \
+	    echo "$(GREEN)✓ Privileged pod correctly rejected$(NC)"; \
+	else \
+	    kubectl delete pod privileged-test -n $(TEST_NAMESPACE) --ignore-not-found > /dev/null 2>&1; \
+	    echo "$(RED)✗ FAIL: Privileged pod was not rejected$(NC)"; exit 1; \
+	fi
 
 test-latest: ## Test that :latest images are blocked
 	@echo "$(BLUE)Testing: Reject :latest tag...$(NC)"
 	@echo "Expected: Pod creation should be denied"
-	@kubectl run test-latest --image=alpine:latest -n $(NAMESPACE) 2>&1 | grep -i "latest\|denied" || true
-	@echo "$(GREEN)✓ Latest tag test completed$(NC)"
+	@if kubectl run test-latest --image=alpine:latest -n $(TEST_NAMESPACE) 2>&1 | grep -qi "denied\|not allowed\|latest"; then \
+	    echo "$(GREEN)✓ Latest tag correctly rejected$(NC)"; \
+	else \
+	    kubectl delete pod test-latest -n $(TEST_NAMESPACE) --ignore-not-found > /dev/null 2>&1; \
+	    echo "$(RED)✗ FAIL: Pod with :latest tag was not rejected$(NC)"; exit 1; \
+	fi
 
-test-mutation: ## Test that resources are mutated
+test-mutation: ## Test that resources and labels are mutated
 	@echo "$(BLUE)Testing: Resource mutation...$(NC)"
-	@kubectl apply -f examples/test-valid-pod.yaml -n $(NAMESPACE) > /dev/null 2>&1 || true
+	@kubectl apply -f examples/test-mutation-pod.yaml -n $(TEST_NAMESPACE) > /dev/null
+	@sleep 2
 	@echo "  Checking if default resources were injected..."
-	@kubectl get pod test-valid-pod -n $(NAMESPACE) -o yaml 2>/dev/null | grep -A 2 "resources:" || echo "Pod not found or no resources"
-	@echo "$(GREEN)✓ Mutation test completed$(NC)"
+	@if kubectl get pod test-mutation-pod -n $(TEST_NAMESPACE) -o jsonpath='{.spec.containers[0].resources.limits.cpu}' 2>/dev/null | grep -q "."; then \
+	    echo "  Resources: $$(kubectl get pod test-mutation-pod -n $(TEST_NAMESPACE) -o jsonpath='{.spec.containers[0].resources}')"; \
+	    echo "$(GREEN)✓ Resource mutation verified$(NC)"; \
+	else \
+	    echo "$(RED)✗ FAIL: Default resources were not injected by mutating webhook$(NC)"; exit 1; \
+	fi
 
-test-labels: ## Test that labels are mutated
+test-labels: ## Test that governance labels are injected by mutating webhook
 	@echo "$(BLUE)Testing: Label injection...$(NC)"
-	@kubectl get pods -n $(NAMESPACE) -o yaml | grep -E "app.kubernetes.io/managed-by|governance/policy-version" | head -5 || echo "No labels found"
-	@echo "$(GREEN)✓ Label test completed$(NC)"
+	@if kubectl get pod test-mutation-pod -n $(TEST_NAMESPACE) -o yaml 2>/dev/null | grep -qE "app.kubernetes.io/managed-by|governance/policy-version"; then \
+	    kubectl get pod test-mutation-pod -n $(TEST_NAMESPACE) -o yaml | grep -E "app.kubernetes.io/managed-by|governance/policy-version" | head -5; \
+	    echo "$(GREEN)✓ Label injection verified$(NC)"; \
+	else \
+	    echo "$(RED)✗ FAIL: Governance labels not injected by mutating webhook$(NC)"; exit 1; \
+	fi
 
 ##@ Logs
 logs: ## Show combined logs from all pods
@@ -238,18 +306,14 @@ exec-nginx: ## Execute command in nginx pod (use COMMAND="...")
 	fi
 
 ##@ Cleanup
-cleanup: cleanup-webhooks cleanup-k8s cleanup-docker-images ## Full cleanup
+cleanup: cleanup-helm cleanup-docker-images ## Full cleanup
 
-cleanup-webhooks: ## Delete webhook configurations
-	@echo "$(BLUE)Deleting webhook configurations...$(NC)"
-	@kubectl delete validatingwebhookconfigurations governance-hub-validator 2>/dev/null || true
-	@kubectl delete mutatingwebhookconfigurations governance-hub-mutator 2>/dev/null || true
-	@echo "$(GREEN)✓ Webhooks deleted$(NC)"
-
-cleanup-k8s: cleanup-webhooks ## Delete Kubernetes namespace
-	@echo "$(BLUE)Deleting namespace $(NAMESPACE)...$(NC)"
-	@kubectl delete namespace $(NAMESPACE) 2>/dev/null || true
-	@echo "$(GREEN)✓ Namespace deleted$(NC)"
+cleanup-helm: ## Uninstall Helm release and delete namespaces
+	@echo "$(BLUE)Uninstalling Helm release...$(NC)"
+	@helm uninstall $(HELM_RELEASE) --namespace $(NAMESPACE) 2>/dev/null || true
+	@kubectl delete namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
+	@kubectl delete namespace $(TEST_NAMESPACE) --ignore-not-found 2>/dev/null || true
+	@echo "$(GREEN)✓ Helm release uninstalled$(NC)"
 
 cleanup-docker-images: ## Remove local Docker images
 	@echo "$(BLUE)Removing Docker images...$(NC)"
@@ -263,6 +327,9 @@ cleanup-certs: ## Remove generated TLS certificates
 	@echo "$(GREEN)✓ Certificates removed$(NC)"
 
 full-clean: cleanup cleanup-certs minikube-delete ## Complete cleanup including Minikube
+
+helm-status: ## Show Helm release status
+	@helm status $(HELM_RELEASE) --namespace $(NAMESPACE) 2>/dev/null || echo "No Helm release found"
 
 ##@ Development
 check-deps: ## Check if all required tools are installed

@@ -6,6 +6,13 @@ global:
   namespace: governance-hub-demo
   app: governance-hub-demo
 
+# Namespace labels (applied by Makefile's create-namespace target)
+# These are passed to Helm for reference and documentation
+# The actual namespace is created and labeled via the Makefile before Helm install
+namespaceLabels:
+  team: platform
+  environment: dev
+
 # Flask App Configuration
 app:
   name: governance-hub-app
@@ -103,6 +110,14 @@ service:
       http: 80
       https: 443
 
+# Namespaces excluded from webhook interception (system/infrastructure namespaces)
+excludedNamespaces:
+  - governance-hub-demo
+  - kubernetes-dashboard
+  - kube-system
+  - kube-public
+  - kube-node-lease
+
 # Webhook Configuration
 webhooks:
   validating:
@@ -142,6 +157,22 @@ webhookRules:
     - namespaces
     - ingresses
   scope: "*"
+
+# Policy Configuration - enable/disable validators and mutators
+policies:
+  validators:
+    ForbidPrivilegedMode: true
+    RequireResourceLimits: true
+    ForbidLatestTag: true
+    NoDirectNamespaceCreation: true
+    RequiredLabelsCheck: true
+    IngressTLSRequired: true
+    IngressRuleLimit: true
+  mutators:
+    CommonLabelsMutator: true
+    DefaultResourcesMutator: true
+    RemoveKubectlAnnotationMutator: true
+    IngressClassDefaultMutator: true
 
 # Pod Security and Labels
 podSecurityContext: {}

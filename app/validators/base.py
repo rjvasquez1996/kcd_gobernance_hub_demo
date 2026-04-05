@@ -1,5 +1,7 @@
 """Base validator class and registration mechanism."""
 
+import os
+
 _validators = []
 
 
@@ -10,8 +12,17 @@ def registered_as_validator(validator_class):
 
 
 def get_validators():
-    """Get all registered validators."""
-    return _validators
+    """Get all registered validators, filtered by ENABLED_VALIDATORS env var.
+
+    If ENABLED_VALIDATORS is not set, all validators are returned.
+    Otherwise, only validators whose class names appear in the comma-separated list are returned.
+    """
+    enabled = os.environ.get('ENABLED_VALIDATORS', '')
+    if not enabled:
+        return _validators
+
+    enabled_set = set(name.strip() for name in enabled.split(',') if name.strip())
+    return [v for v in _validators if v.__name__ in enabled_set]
 
 
 class Validator:
