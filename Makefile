@@ -18,6 +18,9 @@ CHART_PATH ?= ./governance-hub-chart
 NAMESPACE_TEAM ?= platform
 NAMESPACE_ENV ?= dev
 
+# Use colima if available, otherwise fall back to the local Docker daemon
+COLIMA_CMD := $(shell command -v colima 2>/dev/null)
+
 # Color output
 BLUE := \033[0;34m
 GREEN := \033[0;32m
@@ -42,16 +45,28 @@ help: ## Display this help message
 	@echo "  2. make test    # Run all integration tests"
 
 ##@ Minikube
-colima-start: ## Start Colima with enough resources for Minikube (restarts if under-resourced)
-	@echo "$(BLUE)Starting Colima...$(NC)"
-	@CURRENT_MEM=$$(colima list 2>/dev/null | awk 'NR>1 && $$1=="default" {gsub(/GiB/,"",$$5); print int($$5)}'); \
-	if colima status 2>/dev/null | grep -q "Running" && [ "$${CURRENT_MEM:-0}" -ge "$(COLIMA_MEMORY)" ]; then \
-		echo "Colima already running with sufficient memory ($${CURRENT_MEM}GiB)"; \
+colima-start: ## Start Colima if available, otherwise verify Docker daemon is running
+	@if [ -n "$(COLIMA_CMD)" ]; then \
+		echo "$(BLUE)Starting Colima...$(NC)"; \
+		CURRENT_MEM=$$(colima list 2>/dev/null | awk 'NR>1 && $$1=="default" {gsub(/GiB/,"",$$5); print int($$5)}'); \
+		if colima status 2>/dev/null | grep -q "Running" && [ "$${CURRENT_MEM:-0}" -ge "$(COLIMA_MEMORY)" ]; then \
+			echo "Colima already running with sufficient memory ($${CURRENT_MEM}GiB)"; \
+		else \
+			colima stop 2>/dev/null || true; \
+			colima start --cpu $(COLIMA_CPUS) --memory $(COLIMA_MEMORY) --disk $(COLIMA_DISK); \
+		fi; \
+		echo "$(GREEN)✓ Colima started$(NC)"; \
 	else \
-		colima stop 2>/dev/null || true; \
-		colima start --cpu $(COLIMA_CPUS) --memory $(COLIMA_MEMORY) --disk $(COLIMA_DISK); \
+		echo "$(BLUE)Colima not found — using Docker daemon directly...$(NC)"; \
+		docker info > /dev/null 2>&1 || (echo "$(RED)Docker is not running. Please start Docker Desktop or the Docker daemon first.$(NC)"; exit 1); \
+		DOCKER_MEM_GiB=$$(docker info --format '{{.MemTotal}}' 2>/dev/null | awk '{printf "%d", $$1/1024/1024/1024}'); \
+		if [ "$${DOCKER_MEM_GiB:-0}" -lt "$(COLIMA_MEMORY)" ]; then \
+			echo "$(RED)Warning: Docker has $${DOCKER_MEM_GiB}GiB available, recommended $(COLIMA_MEMORY)GiB. Adjust in Docker Desktop → Settings → Resources.$(NC)"; \
+		else \
+			echo "Docker memory: $${DOCKER_MEM_GiB}GiB (sufficient)"; \
+		fi; \
+		echo "$(GREEN)✓ Docker daemon is running$(NC)"; \
 	fi
-	@echo "$(GREEN)✓ Colima started$(NC)"
 
 minikube-start: colima-start ## Start Minikube cluster (starts Colima first)
 	@echo "$(BLUE)Starting Minikube...$(NC)"
@@ -371,9 +386,11 @@ cleanup-minikube: ## Delete Minikube cluster, remove its config, and stop Colima
 	@minikube delete 2>/dev/null || true
 	@rm -rf $(HOME)/.minikube 2>/dev/null || true
 	@echo "$(GREEN)✓ Minikube cluster and config removed$(NC)"
-	@echo "$(BLUE)Stopping Colima...$(NC)"
-	@colima stop 2>/dev/null || true
-	@echo "$(GREEN)✓ Colima stopped$(NC)"
+	@if [ -n "$(COLIMA_CMD)" ]; then \
+		echo "$(BLUE)Stopping Colima...$(NC)"; \
+		colima stop 2>/dev/null || true; \
+		echo "$(GREEN)✓ Colima stopped$(NC)"; \
+	fi
 
 helm-status: ## Show Helm release status
 	@helm status $(HELM_RELEASE) --namespace $(NAMESPACE) 2>/dev/null || echo "No Helm release found"
@@ -384,6 +401,7 @@ check-deps: ## Check if all required tools are installed
 	@command -v minikube >/dev/null 2>&1 && echo "$(GREEN)✓$(NC) minikube" || echo "$(RED)✗$(NC) minikube"
 	@command -v kubectl >/dev/null 2>&1 && echo "$(GREEN)✓$(NC) kubectl" || echo "$(RED)✗$(NC) kubectl"
 	@command -v docker >/dev/null 2>&1 && echo "$(GREEN)✓$(NC) docker" || echo "$(RED)✗$(NC) docker"
+	@command -v colima >/dev/null 2>&1 && echo "$(GREEN)✓$(NC) colima (optional)" || echo "$(BLUE)○$(NC) colima (optional, falls back to Docker daemon)"
 	@command -v openssl >/dev/null 2>&1 && echo "$(GREEN)✓$(NC) openssl" || echo "$(RED)✗$(NC) openssl"
 	@command -v helm >/dev/null 2>&1 && echo "$(GREEN)✓$(NC) helm (optional)" || echo "$(BLUE)○$(NC) helm (optional)"
 
