@@ -226,17 +226,13 @@ unit-test-cov: ## Run unit tests with coverage report
 	@echo "$(GREEN)✓ Coverage report complete$(NC)"
 
 ##@ Integration Testing (requires running cluster)
-test: test-setup test-policies test-privileged test-latest test-mutation test-labels test-teardown ## Run all integration tests against cluster
+test: test-setup create-test-namespaces test-policies test-privileged test-latest test-mutation test-labels test-teardown ## Run all integration tests against cluster
 
 test-setup: ## Verify test namespaces exist and clean up any leftover test pods
 	@echo "$(BLUE)Preparing test namespace $(TEST_NAMESPACE)...$(NC)"
-	@kubectl get namespace $(TEST_NAMESPACE) > /dev/null 2>&1 || \
-	  (echo "$(RED)✗ Test namespace $(TEST_NAMESPACE) not found. Run 'make create-namespace' first.$(NC)" && exit 1)
 	@kubectl delete pod --all -n $(TEST_NAMESPACE) --ignore-not-found > /dev/null 2>&1 || true
 	@echo "$(GREEN)✓ Test namespace ready$(NC)"
 	@echo "$(BLUE)Preparing validator test namespace $(VALIDATOR_TEST_NAMESPACE)...$(NC)"
-	@kubectl get namespace $(VALIDATOR_TEST_NAMESPACE) > /dev/null 2>&1 || \
-	  (echo "$(RED)✗ Validator test namespace $(VALIDATOR_TEST_NAMESPACE) not found. Run 'make create-namespace' first.$(NC)" && exit 1)
 	@kubectl delete pod --all -n $(VALIDATOR_TEST_NAMESPACE) --ignore-not-found > /dev/null 2>&1 || true
 	@echo "$(GREEN)✓ Validator test namespace ready$(NC)"
 
