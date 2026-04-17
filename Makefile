@@ -10,6 +10,7 @@ DOCKER_BUILDKIT ?= 1
 MINIKUBE_MEMORY ?= 3072
 MINIKUBE_CPUS ?= 2
 MINIKUBE_DRIVER ?= docker
+MINIKUBE_K8S_VERSION ?= v1.35.1
 COLIMA_MEMORY ?= 4
 COLIMA_CPUS ?= 2
 COLIMA_DISK ?= 60
@@ -73,7 +74,7 @@ minikube-start: colima-start ## Start Minikube cluster (starts Colima first)
 	@if minikube status --format='{{.Host}}' 2>/dev/null | grep -q "Running"; then \
 		echo "Minikube already running"; \
 	else \
-		minikube start --driver=$(MINIKUBE_DRIVER) --cpus=$(MINIKUBE_CPUS); \
+		minikube start --driver=$(MINIKUBE_DRIVER) --cpus=$(MINIKUBE_CPUS) --kubernetes-version=$(MINIKUBE_K8S_VERSION); \
 	fi
 	@echo "$(GREEN)✓ Minikube started$(NC)"
 
